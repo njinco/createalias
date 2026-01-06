@@ -91,6 +91,9 @@ if [[ $SCRIPT_SOURCED -eq 0 ]]; then
   exit 1
 fi
 
+ALIAS_NAME_REGEX='^[A-Za-z0-9_.][A-Za-z0-9_.-]*$'
+ALIAS_NAME_HINT="Use letters, numbers, dots, underscores, and dashes; no spaces."
+
 SELECTED_ALIAS=""
 
 prompt_alias_name() {
@@ -101,8 +104,8 @@ prompt_alias_name() {
       warn "Alias name cannot be empty."
       continue
     fi
-    if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      warn "Use letters, numbers, and underscores; start with a letter or underscore."
+    if [[ ! "$name" =~ $ALIAS_NAME_REGEX ]]; then
+      warn "$ALIAS_NAME_HINT"
       continue
     fi
     printf '%s' "$name"
@@ -117,8 +120,8 @@ prompt_alias_name_optional() {
     if [[ -z "$name" ]]; then
       return 1
     fi
-    if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      warn "Use letters, numbers, and underscores; start with a letter or underscore."
+    if [[ ! "$name" =~ $ALIAS_NAME_REGEX ]]; then
+      warn "$ALIAS_NAME_HINT"
       continue
     fi
     printf '%s' "$name"
@@ -198,13 +201,32 @@ alias_in_file() {
   local name="$1"
   local file="$2"
   [[ -f "$file" ]] || return 1
-  grep -Eq "^[[:space:]]*alias[[:space:]]+$name=" "$file"
+  awk -v name="$name" '
+    /^[[:space:]]*alias[[:space:]]+/ {
+      line=$0
+      sub(/^[[:space:]]*alias[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      name_part=parts[1]
+      sub(/[[:space:]]+$/, "", name_part)
+      if (name_part == name) { found=1; exit }
+    }
+    END { exit !found }
+  ' "$file"
 }
 
 alias_names_from_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  sed -nE 's/^[[:space:]]*alias[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file"
+  awk '
+    /^[[:space:]]*alias[[:space:]]+/ {
+      line=$0
+      sub(/^[[:space:]]*alias[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      name=parts[1]
+      sub(/[[:space:]]+$/, "", name)
+      if (name != "") print name
+    }
+  ' "$file"
 }
 
 alias_names_from_shell() {
@@ -218,7 +240,16 @@ alias_names_from_shell() {
       lines=$(bash -ic 'alias' 2>/dev/null || true)
     fi
   fi
-  printf '%s\n' "$lines" | sed -nE 's/^alias[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p'
+  printf '%s\n' "$lines" | awk '
+    /^alias[[:space:]]+/ {
+      line=$0
+      sub(/^alias[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      name=parts[1]
+      sub(/[[:space:]]+$/, "", name)
+      if (name != "") print name
+    }
+  '
 }
 
 select_alias_name() {
@@ -278,7 +309,14 @@ remove_alias_from_file() {
   local tmp
   tmp=$(mktemp)
   awk -v name="$name" '
-    $0 ~ "^[[:space:]]*alias[[:space:]]+" name "=" {next}
+    /^[[:space:]]*alias[[:space:]]+/ {
+      line=$0
+      sub(/^[[:space:]]*alias[[:space:]]+/, "", line)
+      split(line, parts, "=")
+      name_part=parts[1]
+      sub(/[[:space:]]+$/, "", name_part)
+      if (name_part == name) next
+    }
     {print}
   ' "$file" > "$tmp"
   cat "$tmp" > "$file"
