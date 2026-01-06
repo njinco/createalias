@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 njinco
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 TARGET_USER="${SUDO_USER:-$USER}"
 TARGET_HOME="$(eval echo "~$TARGET_USER")"
