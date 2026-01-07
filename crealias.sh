@@ -273,6 +273,14 @@ alias_names_from_shell() {
   '
 }
 
+format_alias_line() {
+  local name="$1"
+  local cmd="$2"
+  local escaped
+  escaped=${cmd//\'/\'\\\'\'}
+  printf "alias %s='%s'" "$name" "$escaped"
+}
+
 select_alias_name() {
   local label="$1"
   shift
@@ -375,27 +383,54 @@ add_alias_to_file() {
   local name="$1"
   local cmd="$2"
   local file="$3"
+  local line
   ensure_file "$file"
   if alias_in_file "$name" "$file"; then
     remove_alias_from_file "$name" "$file"
   fi
-  echo "alias $name=$(printf '%q' "$cmd")" >> "$file"
+  line=$(format_alias_line "$name" "$cmd")
+  echo "$line" >> "$file"
 }
 
-source_bashrc() {
-  if [[ $SCRIPT_SOURCED -eq 1 ]]; then
-    if [[ -f "$BASHRC" ]]; then
-      . "$BASHRC"
-      info "Reloaded ~/.bashrc"
-    fi
+source_file() {
+  local file="$1"
+  if [[ -f "$file" ]]; then
+    . "$file"
+    info "Sourced $file"
   else
-    info "To load changes in your shell, run: source \"$BASHRC\""
+    warn "File not found: $file"
+  fi
+}
+
+prompt_reload_after_changes() {
+  local changed_bashrc="$1"
+  local changed_aliases="$2"
+
+  if (( changed_bashrc == 0 && changed_aliases == 0 )); then
+    return 0
+  fi
+
+  section "Apply Changes"
+  category "Reload files into current shell?"
+
+  if (( changed_bashrc == 1 )); then
+    if ask_yes_no "Reload ~/.bashrc now? (may prompt for SSH key)" "y"; then
+      source_file "$BASHRC"
+    fi
+  fi
+
+  if (( changed_aliases == 1 )); then
+    if ask_yes_no "Reload ~/.bash_aliases now?" "y"; then
+      source_file "$BASH_ALIASES"
+    fi
   fi
 }
 
 create_alias_flow() {
   section "Create Alias"
   local name cmd target
+  local changed_bashrc=0
+  local changed_aliases=0
   name=$(prompt_alias_name)
   cmd=$(prompt_alias_command)
 
@@ -419,16 +454,20 @@ create_alias_flow() {
     if [[ "$target" == "bashrc" || "$target" == "both" ]]; then
       add_alias_to_file "$name" "$cmd" "$BASHRC"
       info "Added alias to ~/.bashrc (file)"
+      changed_bashrc=1
     fi
     if [[ "$target" == "bash_aliases" || "$target" == "both" ]]; then
       add_alias_to_file "$name" "$cmd" "$BASH_ALIASES"
       info "Added alias to ~/.bash_aliases (file)"
+      changed_aliases=1
     fi
 
-    source_bashrc
+    alias "$name=$cmd"
+    info "Alias active in current shell (session)."
+    prompt_reload_after_changes "$changed_bashrc" "$changed_aliases"
   else
     if [[ $SCRIPT_SOURCED -eq 1 ]]; then
-      alias "$name=$(printf '%q' "$cmd")"
+      alias "$name=$cmd"
       info "Alias added to current shell session (session)."
     else
       warn "Temporary aliases only work when this script is sourced."
@@ -491,6 +530,8 @@ remove_alias_flow() {
   local remove_bashrc remove_bash_aliases remove_shell did_file_remove
   local -a names
   local source_default="3"
+  local changed_bashrc=0
+  local changed_aliases=0
 
   while true; do
     category "Alias selection source:"
@@ -603,6 +644,7 @@ remove_alias_flow() {
         remove_alias_from_file "$name" "$BASHRC"
         info "Removed from ~/.bashrc (file)"
         did_file_remove=1
+        changed_bashrc=1
       else
         warn "Alias not found in ~/.bashrc (file)."
       fi
@@ -613,6 +655,7 @@ remove_alias_flow() {
         remove_alias_from_file "$name" "$BASH_ALIASES"
         info "Removed from ~/.bash_aliases (file)"
         did_file_remove=1
+        changed_aliases=1
       else
         warn "Alias not found in ~/.bash_aliases (file)."
       fi
@@ -622,9 +665,7 @@ remove_alias_flow() {
       warn "No changes made (nothing selected or found)."
     fi
 
-    if (( did_file_remove == 1 )); then
-      source_bashrc
-    fi
+    prompt_reload_after_changes "$changed_bashrc" "$changed_aliases"
     return 0
   done
 }
