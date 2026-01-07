@@ -146,8 +146,14 @@ ask_yes_no() {
   local prompt="$1"
   local default="${2:-}"
   local answer
+  local suffix
+  case "$default" in
+    y|Y) suffix=" [y/n, default y]: " ;;
+    n|N) suffix=" [y/n, default n]: " ;;
+    *) suffix=" [y/n]: " ;;
+  esac
   while true; do
-    read -r -p "${C_PROMPT}${prompt}${C_RESET}" answer
+    read -r -p "${C_PROMPT}${prompt}${suffix}${C_RESET}" answer
     if [[ -z "$answer" && -n "$default" ]]; then
       answer="$default"
     fi
@@ -161,12 +167,19 @@ ask_yes_no() {
 
 choose_target() {
   local choice
-  category "Save alias to:"
-  menu_item 1 "~/.bashrc" "main shell config"
-  menu_item 2 "~/.bash_aliases" "dedicated aliases file"
-  menu_item 3 "Both" "write to both files"
+  local default_choice="1"
+  if bash_aliases_available; then
+    default_choice="2"
+  fi
   while true; do
-    read -r -p "${C_PROMPT}Select [1-3]: ${C_RESET}" choice
+    category "Save alias to:"
+    menu_item 1 "~/.bashrc" "main shell config"
+    menu_item 2 "~/.bash_aliases" "dedicated aliases file"
+    menu_item 3 "Both" "write to both files"
+    read -r -p "${C_PROMPT}Save alias to [1=~/.bashrc, 2=~/.bash_aliases, 3=both, default ${default_choice}]: ${C_RESET}" choice
+    if [[ -z "$choice" ]]; then
+      choice="$default_choice"
+    fi
     case "$choice" in
       1) echo "bashrc"; return 0 ;;
       2) echo "bash_aliases"; return 0 ;;
@@ -195,6 +208,14 @@ fi
 EOF
     info "Added ~/.bash_aliases loader to ~/.bashrc"
   fi
+}
+
+bash_aliases_available() {
+  if [[ -f "$BASH_ALIASES" ]]; then
+    return 0
+  fi
+  [[ -f "$BASHRC" ]] || return 1
+  grep -qE '(^|[[:space:]])(source|\.)[[:space:]]+(~|\$HOME)/\.bash_aliases' "$BASHRC"
 }
 
 alias_in_file() {
@@ -276,7 +297,10 @@ select_alias_name() {
   done
   local choice
   while true; do
-    read -r -p "${C_PROMPT}Select: ${C_RESET}" choice
+    read -r -p "${C_PROMPT}Select alias [0=back, default 0]: ${C_RESET}" choice
+    if [[ -z "$choice" ]]; then
+      choice="0"
+    fi
     if [[ "$choice" == "0" ]]; then
       return 1
     fi
@@ -292,7 +316,10 @@ confirm_remove_action() {
   local name="$1"
   local answer
   while true; do
-    read -r -p "${C_PROMPT}Remove '$name'? [y=continue, b=back, c=cancel]: ${C_RESET}" answer
+    read -r -p "${C_PROMPT}Remove '$name'? [y=continue, b=back, c=cancel, default b]: ${C_RESET}" answer
+    if [[ -z "$answer" ]]; then
+      answer="b"
+    fi
     case "$answer" in
       y|Y) return 0 ;;
       b|B) return 1 ;;
@@ -300,6 +327,27 @@ confirm_remove_action() {
       *) warn "Please enter y, b, or c." ;;
     esac
   done
+}
+
+default_removal_choice() {
+  local name="$1"
+  local in_bashrc=0
+  local in_aliases=0
+  if alias_in_file "$name" "$BASHRC"; then
+    in_bashrc=1
+  fi
+  if alias_in_file "$name" "$BASH_ALIASES"; then
+    in_aliases=1
+  fi
+  if (( in_bashrc && in_aliases )); then
+    echo "3"
+  elif (( in_bashrc )); then
+    echo "1"
+  elif (( in_aliases )); then
+    echo "2"
+  else
+    echo "4"
+  fi
 }
 
 remove_alias_from_file() {
@@ -352,13 +400,13 @@ create_alias_flow() {
   cmd=$(prompt_alias_command)
 
   if alias "$name" &>/dev/null; then
-    if ! ask_yes_no "Alias exists in current shell. Overwrite? [y/n]: " "n"; then
+    if ! ask_yes_no "Alias exists in current shell. Overwrite?" "n"; then
       warn "Cancelled (no changes)."
       return 0
     fi
   fi
 
-  if ask_yes_no "Make this alias permanent? [y/n]: " "y"; then
+  if ask_yes_no "Make this alias permanent?" "y"; then
     target=$(choose_target)
     if [[ "$target" == "bash_aliases" || "$target" == "both" ]]; then
       ensure_file "$BASH_ALIASES"
@@ -442,6 +490,7 @@ remove_alias_flow() {
   local name choice
   local remove_bashrc remove_bash_aliases remove_shell did_file_remove
   local -a names
+  local source_default="3"
 
   while true; do
     category "Alias selection source:"
@@ -451,7 +500,10 @@ remove_alias_flow() {
     menu_item 4 "Choose from interactive shell aliases" "active session aliases"
     menu_item 5 "Type alias name" "manual entry"
     menu_item 6 "Back" "return to main menu"
-    read -r -p "${C_PROMPT}Select [1-6]: ${C_RESET}" choice
+    read -r -p "${C_PROMPT}Alias source [1=bashrc, 2=bash_aliases, 3=both, 4=interactive, 5=type, 6=back, default ${source_default}]: ${C_RESET}" choice
+    if [[ -z "$choice" ]]; then
+      choice="$source_default"
+    fi
     case "$choice" in
       1)
         mapfile -t names < <(alias_names_from_file "$BASHRC")
@@ -507,13 +559,18 @@ remove_alias_flow() {
 
     section "Removal Targets"
     while true; do
+      local default_remove_choice
+      default_remove_choice=$(default_removal_choice "$name")
       category "Remove from files:"
       menu_item 0 "Back" "return to alias selection"
       menu_item 1 "~/.bashrc" "remove from main shell config"
       menu_item 2 "~/.bash_aliases" "remove from aliases file"
       menu_item 3 "Both" "remove from both files"
       menu_item 4 "Skip file removal" "only affect current session"
-      read -r -p "${C_PROMPT}Select [0-4]: ${C_RESET}" choice
+      read -r -p "${C_PROMPT}Remove from files [0=back, 1=bashrc, 2=bash_aliases, 3=both, 4=skip, default ${default_remove_choice}]: ${C_RESET}" choice
+      if [[ -z "$choice" ]]; then
+        choice="$default_remove_choice"
+      fi
       case "$choice" in
         0) continue 2 ;;
         1) remove_bashrc=1; break ;;
@@ -526,7 +583,7 @@ remove_alias_flow() {
 
     if [[ $SCRIPT_SOURCED -eq 1 ]]; then
       if alias "$name" &>/dev/null; then
-        if ask_yes_no "Remove from current shell? [y/n]: " "y"; then
+        if ask_yes_no "Remove from current shell?" "y"; then
           remove_shell=1
         fi
       else
@@ -578,7 +635,10 @@ while true; do
   menu_item 2 "List aliases" "show current session + file-based aliases"
   menu_item 3 "Remove alias" "pick from lists or type a name"
   menu_item 4 "Quit" "exit the menu"
-  read -r -p "${C_PROMPT}Select [1-4]: ${C_RESET}" choice
+  read -r -p "${C_PROMPT}Main menu [1=create, 2=list, 3=remove, 4=quit, default 2]: ${C_RESET}" choice
+  if [[ -z "$choice" ]]; then
+    choice="2"
+  fi
   case "$choice" in
     1) create_alias_flow ;;
     2) list_aliases_flow ;;
