@@ -108,6 +108,11 @@ prompt_alias_name() {
       warn "$ALIAS_NAME_HINT"
       continue
     fi
+    if [[ "$name" =~ ^[0-9]+$ ]]; then
+      if ! ask_yes_no "Alias name is numeric-only and can be confusing. Continue?" "n"; then
+        continue
+      fi
+    fi
     printf '%s' "$name"
     return 0
   done
@@ -123,6 +128,11 @@ prompt_alias_name_optional() {
     if [[ ! "$name" =~ $ALIAS_NAME_REGEX ]]; then
       warn "$ALIAS_NAME_HINT"
       continue
+    fi
+    if [[ "$name" =~ ^[0-9]+$ ]]; then
+      if ! ask_yes_no "Alias name is numeric-only and can be confusing. Continue?" "n"; then
+        continue
+      fi
     fi
     printf '%s' "$name"
     return 0
@@ -298,25 +308,33 @@ select_alias_name() {
   if [[ -n "$label" ]]; then
     category "$label"
   fi
-  printf '%s0)%s %sBack%s\n' "$C_CAT" "$C_RESET" "$C_DIM" "$C_RESET"
+  printf '%sb)%s %sBack%s\n' "$C_CAT" "$C_RESET" "$C_DIM" "$C_RESET"
   local i
   for i in "${!names[@]}"; do
     printf '%s%d)%s %s%s%s\n' "$C_CAT" "$((i+1))" "$C_RESET" "$C_OUT" "${names[$i]}" "$C_RESET"
   done
   local choice
   while true; do
-    read -r -p "${C_PROMPT}Select alias [0=back, default 0]: ${C_RESET}" choice
+    read -r -p "${C_PROMPT}Select alias [b=back, default b, or type name]: ${C_RESET}" choice
     if [[ -z "$choice" ]]; then
-      choice="0"
+      choice="b"
     fi
-    if [[ "$choice" == "0" ]]; then
+    if [[ "$choice" =~ ^[bB]$ ]]; then
       return 1
     fi
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#names[@]} )); then
-      SELECTED_ALIAS="${names[$((choice-1))]}"
-      return 0
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+      if (( choice >= 1 && choice <= ${#names[@]} )); then
+        SELECTED_ALIAS="${names[$((choice-1))]}"
+        return 0
+      fi
     fi
-    warn "Please choose a number from the list."
+    for i in "${!names[@]}"; do
+      if [[ "${names[$i]}" == "$choice" ]]; then
+        SELECTED_ALIAS="${names[$i]}"
+        return 0
+      fi
+    done
+    warn "Please choose a number from the list or type an alias name."
   done
 }
 
