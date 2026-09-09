@@ -3,9 +3,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 TARGET_USER="${SUDO_USER:-$USER}"
-TARGET_HOME="$(eval echo "~$TARGET_USER")"
-if [[ "$TARGET_HOME" == "~$TARGET_USER" || -z "$TARGET_HOME" || ! -d "$TARGET_HOME" ]]; then
-  TARGET_HOME="$HOME"
+TARGET_HOME="$HOME"
+if [[ -n "${SUDO_USER:-}" && "${EUID:-$(id -u)}" -eq 0 ]]; then
+  sudo_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  if [[ -n "$sudo_home" && -d "$sudo_home" ]]; then
+    TARGET_HOME="$sudo_home"
+  fi
+  unset sudo_home
 fi
 
 BASHRC="$TARGET_HOME/.bashrc"
@@ -101,11 +105,11 @@ prompt_alias_name() {
   while true; do
     read -r -p "${C_PROMPT}Alias name: ${C_RESET}" name
     if [[ -z "$name" ]]; then
-      warn "Alias name cannot be empty."
+      warn "Alias name cannot be empty." >&2
       continue
     fi
     if [[ ! "$name" =~ $ALIAS_NAME_REGEX ]]; then
-      warn "$ALIAS_NAME_HINT"
+      warn "$ALIAS_NAME_HINT" >&2
       continue
     fi
     if [[ "$name" =~ ^[0-9]+$ ]]; then
@@ -126,7 +130,7 @@ prompt_alias_name_optional() {
       return 1
     fi
     if [[ ! "$name" =~ $ALIAS_NAME_REGEX ]]; then
-      warn "$ALIAS_NAME_HINT"
+      warn "$ALIAS_NAME_HINT" >&2
       continue
     fi
     if [[ "$name" =~ ^[0-9]+$ ]]; then
@@ -144,7 +148,7 @@ prompt_alias_command() {
   while true; do
     read -r -p "${C_PROMPT}Alias command/path: ${C_RESET}" cmd
     if [[ -z "$cmd" ]]; then
-      warn "Command/path cannot be empty."
+      warn "Command/path cannot be empty." >&2
       continue
     fi
     printf '%s' "$cmd"
@@ -170,7 +174,7 @@ ask_yes_no() {
     case "$answer" in
       y|Y) return 0 ;;
       n|N) return 1 ;;
-      *) warn "Please enter y or n." ;;
+      *) warn "Please enter y or n." >&2 ;;
     esac
   done
 }
@@ -182,10 +186,10 @@ choose_target() {
     default_choice="2"
   fi
   while true; do
-    category "Save alias to:"
-    menu_item 1 "~/.bashrc" "main shell config"
-    menu_item 2 "~/.bash_aliases" "dedicated aliases file"
-    menu_item 3 "Both" "write to both files"
+    category "Save alias to:" >&2
+    menu_item 1 "~/.bashrc" "main shell config" >&2
+    menu_item 2 "~/.bash_aliases" "dedicated aliases file" >&2
+    menu_item 3 "Both" "write to both files" >&2
     read -r -p "${C_PROMPT}Save alias to [1=~/.bashrc, 2=~/.bash_aliases, 3=both, default ${default_choice}]: ${C_RESET}" choice
     if [[ -z "$choice" ]]; then
       choice="$default_choice"
@@ -194,7 +198,7 @@ choose_target() {
       1) echo "bashrc"; return 0 ;;
       2) echo "bash_aliases"; return 0 ;;
       3) echo "both"; return 0 ;;
-      *) warn "Please choose 1, 2, or 3." ;;
+      *) warn "Please choose 1, 2, or 3." >&2 ;;
     esac
   done
 }
@@ -207,9 +211,9 @@ ensure_file() {
 }
 
 ensure_bash_aliases_sourced() {
-  ensure_file "$BASHRC"
+  ensure_file "$BASHRC" || return 1
   if ! grep -qE '(^|[[:space:]])(source|\.)[[:space:]]+(~|\$HOME)/\.bash_aliases' "$BASHRC"; then
-    cat >> "$BASHRC" <<'EOF'
+    cat >> "$BASHRC" <<'EOF' || return 1
 
 # Load ~/.bash_aliases if it exists
 if [ -f ~/.bash_aliases ]; then
@@ -381,7 +385,7 @@ remove_alias_from_file() {
   local file="$2"
   [[ -f "$file" ]] || return 0
   local tmp
-  tmp=$(mktemp)
+  tmp=$(mktemp "${TMPDIR:-${file%/*}}/crealias.XXXXXX") || return 1
   awk -v name="$name" '
     /^[[:space:]]*alias[[:space:]]+/ {
       line=$0
@@ -392,9 +396,10 @@ remove_alias_from_file() {
       if (name_part == name) next
     }
     {print}
-  ' "$file" > "$tmp"
-  cat "$tmp" > "$file"
+  ' "$file" > "$tmp" && cat "$tmp" > "$file"
+  local status=$?
   rm -f "$tmp"
+  return "$status"
 }
 
 add_alias_to_file() {
@@ -402,12 +407,12 @@ add_alias_to_file() {
   local cmd="$2"
   local file="$3"
   local line
-  ensure_file "$file"
+  ensure_file "$file" || return 1
   if alias_in_file "$name" "$file"; then
-    remove_alias_from_file "$name" "$file"
+    remove_alias_from_file "$name" "$file" || return 1
   fi
   line=$(format_alias_line "$name" "$cmd")
-  echo "$line" >> "$file"
+  printf '%s\n' "$line" >> "$file"
 }
 
 source_file() {
@@ -461,21 +466,30 @@ create_alias_flow() {
 
   if ask_yes_no "Make this alias permanent?" "y"; then
     target=$(choose_target)
+    case "$target" in
+      bashrc|bash_aliases|both) ;;
+      *) warn "Invalid save target; alias was not created."; return 1 ;;
+    esac
     if [[ "$target" == "bash_aliases" || "$target" == "both" ]]; then
-      ensure_file "$BASH_ALIASES"
-      ensure_bash_aliases_sourced
-    fi
-    if [[ "$target" == "bashrc" || "$target" == "both" ]]; then
-      ensure_file "$BASHRC"
+      if ! ensure_file "$BASH_ALIASES" || ! ensure_bash_aliases_sourced; then
+        warn "Could not prepare alias files in $TARGET_HOME."
+        return 1
+      fi
     fi
 
     if [[ "$target" == "bashrc" || "$target" == "both" ]]; then
-      add_alias_to_file "$name" "$cmd" "$BASHRC"
+      if ! add_alias_to_file "$name" "$cmd" "$BASHRC"; then
+        warn "Could not save alias to $BASHRC."
+        return 1
+      fi
       info "Added alias to ~/.bashrc (file)"
       changed_bashrc=1
     fi
     if [[ "$target" == "bash_aliases" || "$target" == "both" ]]; then
-      add_alias_to_file "$name" "$cmd" "$BASH_ALIASES"
+      if ! add_alias_to_file "$name" "$cmd" "$BASH_ALIASES"; then
+        warn "Could not save alias to $BASH_ALIASES."
+        return 1
+      fi
       info "Added alias to ~/.bash_aliases (file)"
       changed_aliases=1
     fi

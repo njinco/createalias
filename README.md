@@ -10,6 +10,17 @@ Source the script so it can update your current shell session:
 source ./crealias.sh
 ```
 
+Permanent aliases are saved to `$HOME/.bashrc`, `$HOME/.bash_aliases`, or
+both, depending on your selection. The script adds a `.bash_aliases` loader
+to `.bashrc` when needed. This also applies to Bash in Termux: choose **yes**
+for “Make this alias permanent?” to keep it across sessions.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
+
 ## Download
 
 ```bash
